@@ -9,13 +9,18 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 func main() {
 	programType := os.Args[1]
 
-	if programType != "writer" && programType != "reader" {
-		log.Fatal("Usage: 'program reader' or 'program writter indentifier', where identifier has to be integer between 0 and 255.")
+	if (programType != "writer" && programType != "reader") || (programType == "writer" && len(os.Args) != 3) || programType == "usage" {
+		fmt.Printf("\nUsage:\n\n   'program reader' or 'program writter _indentifier_', where _identifier_ has to be integer between 0 and 255.\n\nbinary e.x.:     program reader\nbinary e.x.:     program writer 1\nrunning e.x.:    go run . writer 2\n\n")
+
+		os.Exit(0)
 	}
 
 	if programType == "reader" {
@@ -39,18 +44,38 @@ func main() {
 	}
 
 	if programType == "writer" {
-		findLocalAddresses()
-		// conn, err := net.Dial("tcp", "localhost:8080")
-		// if err != nil {
-		// 	fmt.Println("Error connecting to server:", err)
-		// 	os.Exit(1)
-		// }
-		// defer conn.Close()
-		// fmt.Println("Connected to server at localhost:8080")
+		candidateAddresses := findLocalAddresses()
+
+		if len(candidateAddresses) == 0 {
+			fmt.Println("No valid response from canditate(s).\nShutting down writer.")
+			os.Exit(0)
+		}
+
+		timeout := 500 * time.Millisecond
+		var wg sync.WaitGroup
+		for _, address := range candidateAddresses {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				conn, err := net.DialTimeout("tcp", address, timeout)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				for {
+					sendMessage(conn)
+					time.Sleep(time.Millisecond * 300)
+				}
+			}()
+		}
+		wg.Wait()
 	}
 }
 
-func findLocalAddresses() {
+func findLocalAddresses() []string {
+	var candidateAddresses []string
+
 	interfaces, err := net.Interfaces()
 
 	if err != nil {
@@ -65,18 +90,46 @@ func findLocalAddresses() {
 		}
 
 		for _, address := range addresses {
-			ip, _, err := net.ParseCIDR(address.String())
+
+			ip, ipNet, err := net.ParseCIDR(address.String())
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			if ip.To4() == nil { // Check if addres is IP v4
+			if ip.To4() == nil {
 				continue
 			}
 
-			fmt.Println(ip)
+			var wg sync.WaitGroup
+			targetPort := "44444"
+			timeout := 500 * time.Millisecond
+
+			if strings.Contains(ip.String(), "192.168") {
+				fmt.Println("Local network:", address.String())
+
+				for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
+					wg.Add(1)
+
+					go func(ip string) {
+						defer wg.Done()
+
+						address := fmt.Sprintf("%s:%s", ip, targetPort)
+						conn, err := net.DialTimeout("tcp", address, timeout)
+
+						if err == nil {
+							fmt.Printf("Server candidate found at %s\n", address)
+							conn.Close()
+							candidateAddresses = append(candidateAddresses, address)
+						}
+					}(ip.String())
+				}
+				wg.Wait()
+				return candidateAddresses
+			}
 		}
 	}
+
+	return candidateAddresses
 }
 
 func receiveMsgs(conn net.Conn) {
@@ -107,6 +160,8 @@ func sendMessage(conn net.Conn) {
 	writer := bufio.NewWriter(conn)
 	msgLength, msg := randString()
 
+	fmt.Println("Sent message:", msg)
+
 	identifier, err := strconv.Atoi(os.Args[2])
 	if err != nil {
 		log.Fatal(err)
@@ -120,8 +175,26 @@ func sendMessage(conn net.Conn) {
 
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(msgLength+1))
-	writer.Write(header)
-	writer.Write(combinedMsg)
+
+	_, err = writer.Write(header)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = writer.Write(combinedMsg)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func randString() (int, string) {
@@ -136,4 +209,13 @@ func randString() (int, string) {
 		result[i] = chars[rand.Int64()%int64(len(chars))]
 	}
 	return rndLength, string(result)
+}
+
+func incrementIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
 }
