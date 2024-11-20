@@ -51,8 +51,8 @@ func main() {
 			os.Exit(0)
 		}
 
-		timeout := 500 * time.Millisecond
 		var wg sync.WaitGroup
+		timeout := 500 * time.Millisecond
 		for _, address := range candidateAddresses {
 			wg.Add(1)
 			go func() {
@@ -90,13 +90,12 @@ func findLocalAddresses() []string {
 		}
 
 		for _, address := range addresses {
-
-			ip, ipNet, err := net.ParseCIDR(address.String())
+			thisMachineIP, ipNet, err := net.ParseCIDR(address.String())
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			if ip.To4() == nil {
+			if thisMachineIP.To4() == nil {
 				continue
 			}
 
@@ -104,10 +103,12 @@ func findLocalAddresses() []string {
 			targetPort := "44444"
 			timeout := 500 * time.Millisecond
 
-			if strings.Contains(ip.String(), "192.168") {
-				fmt.Println("Local network:", address.String())
+			if strings.HasPrefix(thisMachineIP.String(), "192.168") {
+				for ip := thisMachineIP.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
+					if ip.String() == thisMachineIP.String() {
+						continue
+					}
 
-				for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
 					wg.Add(1)
 
 					go func(ip string) {
@@ -117,8 +118,8 @@ func findLocalAddresses() []string {
 						conn, err := net.DialTimeout("tcp", address, timeout)
 
 						if err == nil {
-							fmt.Printf("Server candidate found at %s\n", address)
 							conn.Close()
+							fmt.Printf("Server candidate found at %s\n", address)
 							candidateAddresses = append(candidateAddresses, address)
 						}
 					}(ip.String())
@@ -212,9 +213,9 @@ func randString() (int, string) {
 }
 
 func incrementIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
+	for pos := len(ip) - 1; pos >= 0; pos-- {
+		ip[pos]++
+		if ip[pos] > 0 {
 			break
 		}
 	}
